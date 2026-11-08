@@ -2,6 +2,7 @@ package com.enoffice.kioskbrowser
 
 import android.annotation.SuppressLint
 import android.content.Intent
+import android.app.Activity
 import android.graphics.Bitmap
 import android.net.Uri
 import android.os.Build
@@ -24,10 +25,12 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.EditText
 import android.widget.FrameLayout
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.WindowCompat
@@ -44,6 +47,7 @@ import com.google.android.material.progressindicator.LinearProgressIndicator
 import com.google.android.material.slider.Slider
 import com.google.android.material.textfield.TextInputEditText
 import org.json.JSONObject
+import java.util.concurrent.Executors
 import kotlin.math.roundToInt
 
 class MainActivity : AppCompatActivity() {
@@ -51,10 +55,14 @@ class MainActivity : AppCompatActivity() {
     companion object {
         const val EXTRA_URL = "com.enoffice.kioskbrowser.URL"
         const val EXTRA_AUTO_SCROLL = "com.enoffice.kioskbrowser.AUTO_SCROLL"
+        const val EXTRA_SLIDESHOW = "com.enoffice.kioskbrowser.SLIDESHOW"
         private const val WELCOME_URL = "file:///android_asset/welcome.html"
         private const val BRIDGE_NAME = "KioskBridge"
         /** 読み込みが終わらない場合に再読み込みするまでの時間 */
         private const val LOAD_TIMEOUT_MS = 60_000L
+        /** スライドショーで表示できなかったスライドを飛ばすまでの時間 */
+        private const val SKIP_DELAY_MS = 3_000L
+        private const val FADE_MS = 400L
     }
 
     private lateinit var prefs: Prefs
@@ -62,6 +70,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var touchBlocker: View
     private lateinit var menuButton: FloatingActionButton
     private lateinit var progress: LinearProgressIndicator
+    private lateinit var slideImage: ImageView
 
     private val handler = Handler(Looper.getMainLooper())
     private var injectionScript = ""
@@ -78,11 +87,43 @@ class MainActivity : AppCompatActivity() {
     private var bottomReached = false
     private var frameScrolling = false
 
+    // ---- スライドショーの状態 ----
+    private var slideshowOn = false
+    private var playlist: List<PlayItem> = emptyList()
+    private var playIndex = -1
+    private var currentItem: PlayItem? = null
+    /** 画面に表示中の画像（同じ画像が続くときは読み込み直さない）。 */
+    private var shownItem: PlayItem? = null
+    private var slideGen = 0
+    private var webSlideFailed = false
+    private val decoder = Executors.newSingleThreadExecutor()
+
     private var menuDialog: AlertDialog? = null
 
-    private val reloadRunnable = Runnable { reloadPage() }
-    private val noScrollRunnable = Runnable { if (autoScroll && !frameScrolling) reloadPage() }
-    private val loadTimeoutRunnable = Runnable { if (autoScroll) reloadPage() }
+    /** 自動スクロールの1周が終わったとき：通常は再読み込み、スライドショー中は次のスライドへ。 */
+    private val reloadRunnable = Runnable { onCycleEnd() }
+    private val noScrollRunnable = Runnable { if (cycleActive && !frameScrolling) onCycleEnd() }
+    private val loadTimeoutRunnable = Runnable { if (cycleActive) onCycleEnd() }
+    private val nextSlideRunnable = Runnable { nextSlide() }
+
+    /** 画面操作を受け付けないモード（自動スクロール or スライドショー）。 */
+    private val locked get() = autoScroll || slideshowOn
+
+    /** 現在のページで「スクロール→次へ」の制御を行うか。 */
+    private val cycleActive get() = if (slideshowOn) currentItem is PlayItem.Web else autoScroll
+
+    /** 現在のページを自動スクロールさせるか。 */
+    private val scrollEnabled get() = if (slideshowOn) (currentItem as? PlayItem.Web)?.scroll == true else autoScroll
+
+    private val settingsLauncher =
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+            when {
+                result.resultCode == SlideshowSettingsActivity.RESULT_START -> startSlideshow(fromStart = true)
+                // 設定画面を開く前に再生していたら、変更を反映して再開
+                prefs.slideshowOn -> startSlideshow(fromStart = false)
+                else -> if (webView.url.isNullOrBlank() || webView.url == "about:blank") restoreBrowser()
+            }
+        }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -93,6 +134,7 @@ class MainActivity : AppCompatActivity() {
         touchBlocker = findViewById(R.id.touchBlocker)
         menuButton = findViewById(R.id.menuButton)
         progress = findViewById(R.id.progress)
+        slideImage = findViewById(R.id.slideImage)
 
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         enterFullscreen()
@@ -102,20 +144,14 @@ class MainActivity : AppCompatActivity() {
 
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
-                if (!autoScroll && webView.canGoBack()) webView.goBack() else showMenu()
+                if (!locked && webView.canGoBack()) webView.goBack() else showMenu()
             }
         })
 
         applyAutoScroll(prefs.autoScroll, restartCycle = false)
 
         if (!handleLaunchIntent(intent)) {
-            val last = prefs.lastUrl
-            if (last.isNullOrBlank()) {
-                webView.loadUrl(WELCOME_URL)
-                handler.post { showMenu() }
-            } else {
-                webView.loadUrl(last)
-            }
+            if (prefs.slideshowOn) startSlideshow(fromStart = true) else restoreBrowser()
         }
         ShortcutHelper.updateDynamicShortcuts(this, prefs.bookmarks)
     }
@@ -126,11 +162,29 @@ class MainActivity : AppCompatActivity() {
         handleLaunchIntent(intent)
     }
 
+    /** 最後に開いていたページ（なければ案内ページ）を表示する。 */
+    private fun restoreBrowser() {
+        val last = prefs.lastUrl
+        if (last.isNullOrBlank()) {
+            webView.loadUrl(WELCOME_URL)
+            handler.post { showMenu() }
+        } else {
+            webView.loadUrl(last)
+        }
+    }
+
     /** ショートカットから起動された場合、そのURL（と自動スクロール設定）で開く。 */
     private fun handleLaunchIntent(intent: Intent?): Boolean {
         val i = intent ?: return false
+        if (i.getBooleanExtra(EXTRA_SLIDESHOW, false)) {
+            i.removeExtra(EXTRA_SLIDESHOW)
+            menuDialog?.dismiss()
+            startSlideshow(fromStart = true)
+            return true
+        }
         val url = i.getStringExtra(EXTRA_URL)
         if (url.isNullOrBlank()) return false
+        if (slideshowOn) stopSlideshow()
         if (i.hasExtra(EXTRA_AUTO_SCROLL)) {
             applyAutoScroll(i.getBooleanExtra(EXTRA_AUTO_SCROLL, false), restartCycle = false)
         }
@@ -214,22 +268,41 @@ class MainActivity : AppCompatActivity() {
 
             override fun onPageStarted(view: WebView, url: String?, favicon: Bitmap?) {
                 resetCycle()
-                if (autoScroll) handler.postDelayed(loadTimeoutRunnable, LOAD_TIMEOUT_MS)
+                if (isBlank(url)) return
+                if (cycleActive) handler.postDelayed(loadTimeoutRunnable, LOAD_TIMEOUT_MS)
             }
 
             override fun onPageFinished(view: WebView, url: String?) {
                 handler.removeCallbacks(loadTimeoutRunnable)
                 if (!documentStartSupported) view.evaluateJavascript(injectionScript, null)
+                CookieManager.getInstance().flush()
+                if (isBlank(url)) return
+                if (slideshowOn) {
+                    if (currentItem !is PlayItem.Web) return
+                    if (webSlideFailed) {
+                        // 通信エラーなどで表示できない → エラー画面は見せずに次のスライドへ
+                        handler.removeCallbacks(nextSlideRunnable)
+                        handler.postDelayed(nextSlideRunnable, SKIP_DELAY_MS)
+                        return
+                    }
+                    hideSlideImage()
+                    startCycle()
+                    return
+                }
                 if (url != null && (url.startsWith("http://") || url.startsWith("https://"))) {
                     prefs.lastUrl = url
                 }
-                CookieManager.getInstance().flush()
                 if (autoScroll) startCycle()
             }
 
             override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
                 // 店頭モニター向け：通信エラー時は「表示時間」経過後に自動で再読み込みされる
                 // （onPageFinished → startCycle → noScrollRunnable）。
+                // スライドショー中はエラー画面を出さずに次へ進む。
+                if (slideshowOn && request.isForMainFrame && currentItem is PlayItem.Web) {
+                    webSlideFailed = true
+                    showBlackCover()
+                }
             }
 
             override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
@@ -243,13 +316,13 @@ class MainActivity : AppCompatActivity() {
         webView.webChromeClient = object : WebChromeClient() {
             override fun onProgressChanged(view: WebView, newProgress: Int) {
                 progress.setProgressCompat(newProgress, true)
-                progress.isVisible = newProgress < 100 && !autoScroll
+                progress.isVisible = newProgress < 100 && !locked
             }
         }
     }
 
     private fun openExternal(url: String) {
-        if (autoScroll) return // 自動スクロール中は他アプリを開かない
+        if (locked) return // 自動スクロール・スライドショー中は他アプリを開かない
         try {
             val intent = if (url.startsWith("intent:")) {
                 Intent.parseUri(url, Intent.URI_INTENT_SCHEME)
@@ -263,6 +336,13 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun reloadPage() {
+        if (slideshowOn) {
+            // 今のスライドを表示し直す
+            playIndex = (playIndex - 1).coerceAtLeast(-1)
+            shownItem = null
+            nextSlide()
+            return
+        }
         handler.removeCallbacks(reloadRunnable)
         handler.removeCallbacks(noScrollRunnable)
         val url = webView.url
@@ -294,6 +374,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         menuDialog?.dismiss()
+        decoder.shutdownNow()
         destroyWebView()
         super.onDestroy()
     }
@@ -315,15 +396,17 @@ class MainActivity : AppCompatActivity() {
         when (json.optString("t")) {
             "ready" -> {
                 frames.add(proxy)
-                if (autoScroll && cycleStarted) sendStart(proxy)
+                if (cycleActive && cycleStarted && scrollEnabled) sendStart(proxy)
             }
             "scrolling" -> if (json.optInt("cycle", -1) == cycleId) {
                 frameScrolling = true
                 handler.removeCallbacks(noScrollRunnable)
             }
-            "bottom" -> if (autoScroll && json.optInt("cycle", -1) == cycleId && !bottomReached) {
+            "bottom" -> if (cycleActive && json.optInt("cycle", -1) == cycleId && !bottomReached) {
                 bottomReached = true
-                handler.postDelayed(reloadRunnable, prefs.bottomPauseSec * 1000L)
+                val web = currentItem as? PlayItem.Web
+                val pauseSec = if (slideshowOn && web != null) web.afterScrollSec else prefs.bottomPauseSec
+                handler.postDelayed(reloadRunnable, pauseSec * 1000L)
             }
         }
     }
@@ -349,9 +432,18 @@ class MainActivity : AppCompatActivity() {
         cycleId++
         bottomReached = false
         frameScrolling = false
-        frames.forEach { sendStart(it) }
+        val scroll = scrollEnabled
+        if (scroll) frames.forEach { sendStart(it) }
+        // どのフレームもスクロールしない（1画面に収まる / スクロールOFF）場合の表示時間
+        val web = currentItem as? PlayItem.Web
+        val staySec = if (slideshowOn && web != null) web.durationSec else prefs.staySec
+        val waitSec = (if (scroll) prefs.topPauseSec else 0) + staySec
         handler.removeCallbacks(noScrollRunnable)
-        handler.postDelayed(noScrollRunnable, (prefs.topPauseSec + prefs.staySec) * 1000L)
+        handler.postDelayed(noScrollRunnable, waitSec * 1000L)
+    }
+
+    private fun onCycleEnd() {
+        if (slideshowOn) nextSlide() else reloadPage()
     }
 
     private fun resetCycle() {
@@ -367,8 +459,9 @@ class MainActivity : AppCompatActivity() {
     private fun applyAutoScroll(on: Boolean, restartCycle: Boolean) {
         autoScroll = on
         prefs.autoScroll = on
-        touchBlocker.isVisible = on
-        menuButton.isVisible = !on
+        updateLockUi()
+        // スライドショー中は設定の保存だけ（スライドショー終了後の通常表示に反映）
+        if (slideshowOn) return
         if (on) {
             progress.isVisible = false
             if (restartCycle) {
@@ -382,6 +475,174 @@ class MainActivity : AppCompatActivity() {
             handler.removeCallbacks(loadTimeoutRunnable)
             frames.forEach { post(it, JSONObject().put("cmd", "stop")) }
         }
+    }
+
+    private fun updateLockUi() {
+        touchBlocker.isVisible = locked
+        menuButton.isVisible = !locked
+        if (locked) progress.isVisible = false
+    }
+
+    private fun isBlank(url: String?) = url.isNullOrBlank() || url == "about:blank"
+
+    // ------------------------------------------------------------------
+    // スライドショー（デジタルサイネージ）
+    //   画像   … 設定した秒数だけ表示して次へ
+    //   PDF    … 1ページずつ、設定した秒数で次のページ → 最終ページの次は次のスライドへ
+    //   Web    … 自動スクロールONなら下までスクロールし、スクロール完了後n秒で次へ
+    //             （1画面に収まる / スクロールOFFのときは表示時間で次へ）
+    //   最後まで行ったら先頭に戻って繰り返す
+    // ------------------------------------------------------------------
+
+    private fun startSlideshow(fromStart: Boolean) {
+        val list = SlideStore(this).buildPlaylist()
+        if (list.isEmpty()) {
+            Toast.makeText(this, R.string.ss_nothing_to_play, Toast.LENGTH_LONG).show()
+            if (slideshowOn) stopSlideshow() else prefs.slideshowOn = false
+            if (isBlank(webView.url)) restoreBrowser()
+            return
+        }
+        menuDialog?.dismiss()
+        if (!slideshowOn) {
+            // 通常表示の自動スクロールを止めてから切り替える
+            handler.removeCallbacks(reloadRunnable)
+            handler.removeCallbacks(noScrollRunnable)
+            handler.removeCallbacks(loadTimeoutRunnable)
+            frames.forEach { post(it, JSONObject().put("cmd", "stop")) }
+        }
+        slideshowOn = true
+        prefs.slideshowOn = true
+        updateLockUi()
+        playlist = list
+        playIndex = if (fromStart) -1 else (playIndex - 1).coerceIn(-1, list.size - 2)
+        shownItem = null
+        nextSlide()
+    }
+
+    private fun stopSlideshow() {
+        slideshowOn = false
+        prefs.slideshowOn = false
+        slideGen++
+        handler.removeCallbacks(nextSlideRunnable)
+        resetCycle()
+        currentItem = null
+        shownItem = null
+        playlist = emptyList()
+        slideImage.animate().cancel()
+        slideImage.setImageDrawable(null)
+        slideImage.isVisible = false
+        updateLockUi()
+    }
+
+    /** 設定画面を開いている間は再生を止めておく。 */
+    private fun pauseSlideshow() {
+        slideGen++
+        handler.removeCallbacks(nextSlideRunnable)
+        resetCycle()
+        frames.forEach { post(it, JSONObject().put("cmd", "stop")) }
+        currentItem = null
+        showBlackCover()
+        webView.loadUrl("about:blank")
+    }
+
+    private fun nextSlide() {
+        if (!slideshowOn || playlist.isEmpty() || isFinishing) return
+        handler.removeCallbacks(nextSlideRunnable)
+        handler.removeCallbacks(reloadRunnable)
+        handler.removeCallbacks(noScrollRunnable)
+        handler.removeCallbacks(loadTimeoutRunnable)
+        frames.forEach { post(it, JSONObject().put("cmd", "stop")) }
+
+        playIndex = (playIndex + 1) % playlist.size
+        val item = playlist[playIndex]
+        currentItem = item
+        webSlideFailed = false
+        val gen = ++slideGen
+
+        when (item) {
+            is PlayItem.Web -> {
+                // 読み込みが終わるまでは前の画像を表示したまま（onPageFinished で切り替え）
+                cycleStarted = false
+                shownItem = null
+                webView.loadUrl(item.url)
+            }
+            is PlayItem.Image, is PlayItem.PdfPage -> {
+                val durationMs = (if (item is PlayItem.Image) item.durationSec else (item as PlayItem.PdfPage).durationSec) * 1000L
+                if (item == shownItem && slideImage.isVisible) {
+                    // 同じ画像が続く（スライドが1枚だけ等）→ 読み込み直さない
+                    handler.postDelayed(nextSlideRunnable, durationMs)
+                    return
+                }
+                val (w, h) = screenSize()
+                decoder.execute {
+                    val bmp = runCatching { SlideImageLoader.load(item, w, h) }.getOrNull()
+                    runOnUiThread {
+                        if (gen != slideGen || !slideshowOn || isDestroyed) return@runOnUiThread
+                        if (bmp == null) {
+                            // ファイルが壊れている等 → 飛ばす
+                            handler.postDelayed(nextSlideRunnable, SKIP_DELAY_MS)
+                        } else {
+                            showSlideBitmap(item, bmp)
+                            handler.postDelayed(nextSlideRunnable, durationMs)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private fun screenSize(): Pair<Int, Int> {
+        val dm = resources.displayMetrics
+        val w = window.decorView.width.takeIf { it > 0 } ?: dm.widthPixels
+        val h = window.decorView.height.takeIf { it > 0 } ?: dm.heightPixels
+        return w to h
+    }
+
+    private fun showSlideBitmap(item: PlayItem, bmp: Bitmap) {
+        val fill = item is PlayItem.Image && SlideStore(this).fillScreen
+        val apply = {
+            slideImage.scaleType = if (fill) ImageView.ScaleType.CENTER_CROP else ImageView.ScaleType.FIT_CENTER
+            slideImage.setImageBitmap(bmp)
+            shownItem = item
+        }
+        slideImage.animate().cancel()
+        if (slideImage.isVisible && slideImage.drawable != null) {
+            // 画像 → 画像：一度暗くしてから切り替える
+            slideImage.animate().alpha(0f).setDuration(FADE_MS / 2).withEndAction {
+                apply()
+                slideImage.animate().alpha(1f).setDuration(FADE_MS / 2).start()
+            }.start()
+        } else {
+            apply()
+            if (!slideImage.isVisible) slideImage.alpha = 0f
+            slideImage.isVisible = true
+            slideImage.animate().alpha(1f).setDuration(FADE_MS).start()
+        }
+        // 裏で再生中のWebページ（動画・音声など）を止める
+        if (!isBlank(webView.url)) webView.loadUrl("about:blank")
+    }
+
+    private fun hideSlideImage() {
+        if (!slideImage.isVisible) return
+        slideImage.animate().cancel()
+        slideImage.animate().alpha(0f).setDuration(FADE_MS).withEndAction {
+            slideImage.isVisible = false
+            slideImage.setImageDrawable(null)
+            slideImage.alpha = 1f
+        }.start()
+    }
+
+    /** 黒い画面で覆う（エラー画面などを見せない）。 */
+    private fun showBlackCover() {
+        slideImage.animate().cancel()
+        slideImage.alpha = 1f
+        slideImage.isVisible = true
+    }
+
+    private fun openSlideshowSettings() {
+        menuDialog?.dismiss()
+        if (slideshowOn) pauseSlideshow()
+        settingsLauncher.launch(Intent(this, SlideshowSettingsActivity::class.java))
     }
 
     @SuppressLint("ClickableViewAccessibility")
@@ -418,6 +679,7 @@ class MainActivity : AppCompatActivity() {
             if (url == null) {
                 Toast.makeText(this, R.string.invalid_url, Toast.LENGTH_SHORT).show()
             } else {
+                if (slideshowOn) stopSlideshow()
                 webView.loadUrl(url)
                 dialog.dismiss()
             }
@@ -428,6 +690,25 @@ class MainActivity : AppCompatActivity() {
                 openFromInput(); true
             } else false
         }
+
+        // スライドショー
+        view.findViewById<MaterialSwitch>(R.id.switchSlideshow).apply {
+            isChecked = slideshowOn
+            setOnCheckedChangeListener { sw, checked ->
+                if (checked) {
+                    if (SlideStore(this@MainActivity).buildPlaylist().isEmpty()) {
+                        sw.isChecked = false
+                        Toast.makeText(this@MainActivity, R.string.ss_nothing_to_play, Toast.LENGTH_LONG).show()
+                    } else {
+                        startSlideshow(fromStart = true) // メニューも閉じる
+                    }
+                } else if (slideshowOn) {
+                    stopSlideshow()
+                    restoreBrowser()
+                }
+            }
+        }
+        view.findViewById<View>(R.id.btnSlideshowSettings).setOnClickListener { openSlideshowSettings() }
 
         // 自動スクロール
         view.findViewById<MaterialSwitch>(R.id.switchAutoScroll).apply {
@@ -461,6 +742,7 @@ class MainActivity : AppCompatActivity() {
                 row.findViewById<TextView>(R.id.bmUrl).text = bm.url
                 row.findViewById<View>(R.id.bmMain).apply {
                     setOnClickListener {
+                        if (slideshowOn) stopSlideshow()
                         webView.loadUrl(bm.url)
                         dialog.dismiss()
                     }

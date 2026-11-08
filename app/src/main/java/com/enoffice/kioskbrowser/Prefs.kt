@@ -21,6 +21,11 @@ class Prefs(context: Context) {
         get() = sp.getBoolean(KEY_AUTO_SCROLL, false)
         set(value) = sp.edit().putBoolean(KEY_AUTO_SCROLL, value).apply()
 
+    /** スライドショー再生中か（次回起動時・再起動時に再開）。 */
+    var slideshowOn: Boolean
+        get() = sp.getBoolean(KEY_SLIDESHOW, false)
+        set(value) = sp.edit().putBoolean(KEY_SLIDESHOW, value).apply()
+
     /** スクロール速度（CSSピクセル/秒）。 */
     var speed: Int
         get() = sp.getInt(KEY_SPEED, 60)
@@ -68,5 +73,6 @@ class Prefs(context: Context) {
         const val KEY_BOTTOM_PAUSE = "bottom_pause"
         const val KEY_STAY = "stay"
         const val KEY_BOOKMARKS = "bookmarks"
+        const val KEY_SLIDESHOW = "slideshow"
     }
 }
