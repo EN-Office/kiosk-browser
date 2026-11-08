@@ -1,0 +1,15 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp"
+    android:viewportWidth="108" android:viewportHeight="108">
+    <!-- monitor -->
+    <path android:fillColor="#FFFFFF"
+        android:pathData="M30,34h48a4,4 0,0 1,4 4v28a4,4 0,0 1,-4 4H30a4,4 0,0 1,-4 -4V38a4,4 0,0 1,4 -4z" />
+    <path android:fillColor="#1E6FD9"
+        android:pathData="M31,39h46v26H31z" />
+    <!-- stand -->
+    <path android:fillColor="#FFFFFF" android:pathData="M48,70h12v5H48z" />
+    <path android:fillColor="#FFFFFF" android:pathData="M42,75h24v3H42z" />
+    <!-- scroll arrow -->
+    <path android:fillColor="#FFFFFF"
+        android:pathData="M52,43h4v12h5l-7,7 -7,-7h5z" />
+</vector>

@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">全画面ブラウザ</string>
+    <string name="menu_title">メニュー</string>
+    <string name="url_hint">URL（https://…）</string>
+    <string name="open">開く</string>
+    <string name="auto_scroll_mode">自動スクロールモード</string>
+    <string name="auto_scroll_desc">ONの間は画面操作を受け付けず、上から下へスクロール→更新を繰り返します。ダブルタップでこのメニューを開けます。</string>
+    <string name="label_speed">スクロール速度: %1$d px/秒</string>
+    <string name="label_top_pause">開始前の待ち時間: %1$d 秒</string>
+    <string name="label_bottom_pause">最下部での待ち時間: %1$d 秒</string>
+    <string name="label_stay">スクロール不要なページの表示時間: %1$d 秒</string>
+    <string name="add_bookmark">このページをブックマーク</string>
+    <string name="reload">再読み込み</string>
+    <string name="bookmarks">ブックマーク</string>
+    <string name="no_bookmarks">ブックマークはまだありません</string>
+    <string name="shortcut_hint">「ホームに追加」でホーム画面にアプリ起動アイコンを作成します。アプリアイコンの長押しメニューからもブックマークを開けます。タイトルを長押しすると名前を変更できます。</string>
+    <string name="pin_to_home">ホームに追加</string>
+    <string name="delete">削除</string>
+    <string name="exit_app">アプリを終了</string>
+    <string name="close">閉じる</string>
+    <string name="menu_button">メニュー</string>
+    <string name="invalid_url">URLを入力してください</string>
+    <string name="bookmark_added">ブックマークに追加しました</string>
+    <string name="bookmark_exists">すでにブックマークされています</string>
+    <string name="bookmark_unavailable">このページはブックマークできません</string>
+    <string name="pin_mode_title">ショートカットの起動方法</string>
+    <string name="pin_mode_auto">自動スクロールONで起動</string>
+    <string name="pin_mode_normal">通常ブラウザで起動</string>
+    <string name="pin_unsupported">このホームアプリはショートカット作成に対応していません</string>
+    <string name="pin_requested">ホーム画面への追加をリクエストしました</string>
+    <string name="rename_title">ブックマーク名を変更</string>
+    <string name="ok">OK</string>
+    <string name="cancel">キャンセル</string>
+    <string name="webview_too_old">Android System WebView が古いため、一部機能（iframe内の自動スクロール等）が動作しない可能性があります。Playストアで更新してください。</string>
+</resources>
