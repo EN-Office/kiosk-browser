@@ -23,5 +23,12 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <activity
+            android:name=".SlideshowSettingsActivity"
+            android:exported="false"
+            android:label="@string/ss_title"
+            android:theme="@style/Theme.KioskBrowser.Settings"
+            android:windowSoftInputMode="adjustResize" />
     </application>
 </manifest>

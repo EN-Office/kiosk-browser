@@ -42,6 +42,24 @@ object ShortcutHelper {
         return ShortcutManagerCompat.requestPinShortcut(context, info, null)
     }
 
+    /** 「スライドショーを再生」するショートカットをホーム画面に追加する。 */
+    fun requestPinSlideshow(context: Context): Boolean {
+        if (!isPinSupported(context)) return false
+        val label = context.getString(R.string.ss_shortcut_label)
+        val intent = Intent(context, MainActivity::class.java).apply {
+            action = Intent.ACTION_VIEW
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+            putExtra(MainActivity.EXTRA_SLIDESHOW, true)
+        }
+        val info = ShortcutInfoCompat.Builder(context, "pin_slideshow")
+            .setShortLabel(label)
+            .setLongLabel(label)
+            .setIcon(letterIcon(context, label))
+            .setIntent(intent)
+            .build()
+        return ShortcutManagerCompat.requestPinShortcut(context, info, null)
+    }
+
     /** アプリアイコン長押しで出るショートカットをブックマークと同期する。 */
     fun updateDynamicShortcuts(context: Context, bookmarks: List<Bookmark>) {
         runCatching {

@@ -10,6 +10,16 @@
         android:layout_width="match_parent"
         android:layout_height="match_parent" />
 
+    <!-- スライドショーの画像・PDF表示（Webページ読み込み中は前の画像を表示しておく） -->
+    <ImageView
+        android:id="@+id/slideImage"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="@android:color/black"
+        android:importantForAccessibility="no"
+        android:scaleType="fitCenter"
+        android:visibility="gone" />
+
     <com.google.android.material.progressindicator.LinearProgressIndicator
         android:id="@+id/progress"
         android:layout_width="match_parent"
